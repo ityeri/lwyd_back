@@ -15,6 +15,7 @@ dependencies = [
     "reger>=0.1.3",
     "starlette>=0.52.1",
     "uvicorn>=0.41.0",
+    "yt-dlp>=2026.8.19",
 ]
 
 [project.scripts]

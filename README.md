@@ -4,8 +4,9 @@ YouTube video/audio downloader backend for [lwyd](https://github.com/ityeri/lwyd
 
 ## Stack
 
-- Python 3.14 + FastAPI + pytubefix (AsyncYouTube) + ffmpeg
+- Python 3.14 + FastAPI + pytubefix + yt-dlp + ffmpeg
 - uv + PEP 517 (`uv_build`), Nix dev shell (flake.nix)
+- Logging via [reger](https://pypi.org/project/reger/) (default level INFO)
 
 ## Setup
 
@@ -28,4 +29,9 @@ Requires `ffmpeg` on PATH.
 
 `predownload` body: `mode` (`video` | `audio` | `both`), `video_resolution`, `video_codec`, `audio_bitrate`, `audio_codec`, `container` (`mp4` | `webm` | `mkv` | `mov` | `mp3` | `wav` | `flac` | `ogg` | `m4a`).
 
-Streams are fetched with `AsyncYouTube`; when the default client gets blocked by YouTube, `WEB`/`IOS`/`TV`/`WEB_EMBED` clients are tried in order. Downloads run in threads, ffmpeg merge/convert runs as a subprocess, so the event loop stays free.
+## Download pipeline
+
+1. **pytubefix** (sync `YouTube`) — streams fetched with client fallback `WEB → IOS → TV → WEB_EMBED → ANDROID_VR`; downloads run in threads, ffmpeg merge/convert runs as a subprocess, so the event loop stays free.
+2. **yt-dlp fallback** — when pytubefix fails (e.g. SABR-only videos blocked by `PoToken INVALID`), the task automatically retries with yt-dlp, which handles SABR/po_token streams.
+
+`/api/info` uses `AsyncYouTube` for non-blocking metadata lookups.

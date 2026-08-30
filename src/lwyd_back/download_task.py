@@ -8,6 +8,7 @@ from pathlib import Path
 from pytubefix import YouTube
 from pytubefix.query import StreamQuery
 from pytubefix.streams import Stream
+from yt_dlp import YoutubeDL
 
 from lwyd_back.schemes import DownloadRequest
 from lwyd_back.task_status import TaskStatus
@@ -43,8 +44,7 @@ class DownloadTask:
 
     async def _run(self) -> None:
         try:
-            yt, streams = await self._create_youtube()
-            await self._process(yt, streams)
+            await self._run_with_fallback()
             self.status = TaskStatus.DONE
             self.progress = 1.0
             logger.info('download finished: task_id=%s filename=%s', self.task_id, self.filename)
@@ -52,6 +52,17 @@ class DownloadTask:
             self.status = TaskStatus.ERROR
             self.error = str(exc)
             logger.error('download failed: task_id=%s error=%s', self.task_id, exc)
+
+    async def _run_with_fallback(self) -> None:
+        try:
+            await self._run_pytubefix()
+        except Exception as pytubefix_exc:
+            logger.warning('pytubefix download failed, falling back to yt-dlp: task_id=%s error=%s', self.task_id, pytubefix_exc)
+            await self._run_ytdlp()
+
+    async def _run_pytubefix(self) -> None:
+        yt, streams = await self._create_youtube()
+        await self._process_pytubefix(yt, streams)
 
     async def _create_youtube(self) -> tuple[YouTube, StreamQuery]:
         def create() -> tuple[YouTube, StreamQuery]:
@@ -74,7 +85,7 @@ class DownloadTask:
         if total:
             self.progress = min(0.99, 1.0 - bytes_remaining / total)
 
-    async def _process(self, yt: YouTube, streams: StreamQuery) -> None:
+    async def _process_pytubefix(self, yt: YouTube, streams: StreamQuery) -> None:
         work_dir = self.download_dir / uuid.uuid4().hex
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -179,6 +190,79 @@ class DownloadTask:
             args += ['-c:a', 'copy'] if self._is_opus(audio_stream) else ['-c:a', 'libopus']
             return args
         return ['-c', 'copy']
+
+    async def _run_ytdlp(self) -> None:
+        url = f'https://www.youtube.com/watch?v={self.video_id}'
+        container = self.request.container
+        mode = self.request.mode
+        resolution = self._to_int(self.request.video_resolution)
+        work_dir = self.download_dir / uuid.uuid4().hex
+        work_dir.mkdir(parents=True, exist_ok=True)
+        output_template = str(work_dir / 'download.%(ext)s')
+
+        if mode == 'audio' or container in _AUDIO_ENCODERS:
+            format_selector = 'bestaudio/best'
+        elif mode == 'video':
+            if resolution:
+                format_selector = f'bestvideo[height<={resolution}]/bestvideo/best'
+            else:
+                format_selector = 'bestvideo/best'
+        else:
+            if resolution:
+                format_selector = f'bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best'
+            else:
+                format_selector = 'bestvideo+bestaudio/best'
+
+        if container in _AUDIO_ENCODERS:
+            options = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': format_selector,
+                'outtmpl': output_template,
+                'noprogress': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': container,
+                    'preferredquality': '192',
+                }],
+                'progress_hooks': [self._on_ytdlp_progress],
+            }
+        else:
+            options = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': format_selector,
+                'outtmpl': output_template,
+                'merge_output_format': container,
+                'noprogress': True,
+                'progress_hooks': [self._on_ytdlp_progress],
+            }
+
+        def run() -> tuple[Path, str]:
+            with YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                path = Path(filename)
+                if not path.exists() and info.get('requested_downloads'):
+                    path = Path(info['requested_downloads'][0].get('filepath', str(path)))
+                title = info.get('title') or self.video_id
+                return path, title
+
+        path, title = await asyncio.to_thread(run)
+        output_name = f'{self._sanitize(title)}.{path.suffix.lstrip(".")}'
+        final_path = self.download_dir / output_name
+        path.replace(final_path)
+        self.filename = output_name
+        work_dir.rmdir()
+
+    def _on_ytdlp_progress(self, data: dict) -> None:
+        if data.get('status') == 'downloading':
+            total = data.get('total_bytes') or data.get('total_bytes_estimate')
+            downloaded = data.get('downloaded_bytes', 0)
+            if total:
+                self.progress = min(0.99, downloaded / total)
+        elif data.get('status') == 'finished':
+            self.progress = 0.99
 
     @staticmethod
     def _is_h264(stream: Stream | None) -> bool:
