@@ -9,3 +9,9 @@ wheels/
 # Virtual environments
 .venv
 .idea/
+
+# Local env
+.env
+
+# Downloads
+/downloads/

@@ -1,5 +1,6 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import dotenv
@@ -11,11 +12,14 @@ class MiddlewareMeta:
     middleware_class: type
     kwargs: dict[str, Any]
 
+
 @dataclass
 class Config:
     server_host: str
     server_port: int
-    middlewares: list[MiddlewareMeta]
+    download_dir: Path
+    middlewares: list[MiddlewareMeta] = field(default_factory=list)
+
 
 def get_dotenv_config() -> Config:
     dotenv.load_dotenv()
@@ -24,6 +28,7 @@ def get_dotenv_config() -> Config:
     return Config(
         server_host=os.getenv('SERVER_HOST'),
         server_port=int(os.getenv('SERVER_PORT')),
+        download_dir=Path(os.getenv('DOWNLOAD_DIR', 'downloads')),
         middlewares=[
             MiddlewareMeta(
                 CORSMiddleware,

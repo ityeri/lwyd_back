@@ -1,7 +1,7 @@
 [project]
 name = "lwyd-back"
 version = "0.1.0"
-description = "Add your description here"
+description = "YouTube video/audio downloader backend"
 readme = "README.md"
 authors = [
     { name = "ityeri", email = "ityeri9@gmail.com" }
