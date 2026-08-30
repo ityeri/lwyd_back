@@ -11,7 +11,7 @@ from pytubefix.streams import Stream
 from lwyd_back.schemes import DownloadRequest
 from lwyd_back.task_status import TaskStatus
 
-_CLIENTS = ('ANDROID_VR', 'WEB', 'IOS', 'TV', 'WEB_EMBED')
+_CLIENTS = ('WEB', 'IOS', 'TV', 'WEB_EMBED', 'ANDROID_VR')
 _AUDIO_ENCODERS = {
     'mp3': 'libmp3lame',
     'wav': 'pcm_s16le',

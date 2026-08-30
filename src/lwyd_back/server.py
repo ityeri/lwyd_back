@@ -8,7 +8,7 @@ from lwyd_back.download_task import DownloadTask
 from lwyd_back.schemes import DownloadRequest, PreDownloadResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
 from lwyd_back.task_status import TaskStatus
 
-_CLIENTS = ('ANDROID_VR', 'WEB', 'IOS', 'TV', 'WEB_EMBED')
+_CLIENTS = ('WEB', 'IOS', 'TV', 'WEB_EMBED', 'ANDROID_VR')
 _VIDEO_ID = Path(min_length=11, max_length=11)
 
 
