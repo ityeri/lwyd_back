@@ -1,15 +1,18 @@
 import asyncio
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pytubefix import AsyncYouTube
+from pytubefix import YouTube
 from pytubefix.query import StreamQuery
 from pytubefix.streams import Stream
 
 from lwyd_back.schemes import DownloadRequest
 from lwyd_back.task_status import TaskStatus
+
+logger = logging.getLogger(__name__)
 
 _CLIENTS = ('WEB', 'IOS', 'TV', 'WEB_EMBED', 'ANDROID_VR')
 _AUDIO_ENCODERS = {
@@ -39,37 +42,39 @@ class DownloadTask:
         self.task = asyncio.create_task(self._run())
 
     async def _run(self) -> None:
-        yt: AsyncYouTube | None = None
         try:
             yt, streams = await self._create_youtube()
             await self._process(yt, streams)
             self.status = TaskStatus.DONE
             self.progress = 1.0
+            logger.info('download finished: task_id=%s filename=%s', self.task_id, self.filename)
         except Exception as exc:
             self.status = TaskStatus.ERROR
             self.error = str(exc)
-        finally:
-            if yt is not None:
-                await yt.http_client.close()
+            logger.error('download failed: task_id=%s error=%s', self.task_id, exc)
 
-    async def _create_youtube(self) -> tuple[AsyncYouTube, StreamQuery]:
-        url = f'https://www.youtube.com/watch?v={self.video_id}'
-        last_error: Exception | None = None
-        for client in _CLIENTS:
-            try:
-                yt = AsyncYouTube(url, client=client, on_progress_callback=self._on_progress)
-                streams = await yt.streams()
-                return yt, streams
-            except Exception as exc:
-                last_error = exc
-        raise last_error
+    async def _create_youtube(self) -> tuple[YouTube, StreamQuery]:
+        def create() -> tuple[YouTube, StreamQuery]:
+            url = f'https://www.youtube.com/watch?v={self.video_id}'
+            last_error: Exception | None = None
+            for client in _CLIENTS:
+                try:
+                    yt = YouTube(url, client=client, on_progress_callback=self._on_progress)
+                    streams = yt.streams
+                    logger.info('youtube client ok: video_id=%s client=%s', self.video_id, client)
+                    return yt, streams
+                except Exception as exc:
+                    logger.warning('youtube client failed: video_id=%s client=%s error=%s', self.video_id, client, exc)
+                    last_error = exc
+            raise last_error
+        return await asyncio.to_thread(create)
 
     def _on_progress(self, stream, chunk: bytes, bytes_remaining: int) -> None:
         total = stream.filesize or stream.filesize_approx
         if total:
             self.progress = min(0.99, 1.0 - bytes_remaining / total)
 
-    async def _process(self, yt: AsyncYouTube, streams: StreamQuery) -> None:
+    async def _process(self, yt: YouTube, streams: StreamQuery) -> None:
         work_dir = self.download_dir / uuid.uuid4().hex
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -77,7 +82,7 @@ class DownloadTask:
             audio_stream = self._pick_audio_stream(streams) if self.request.mode in ('audio', 'both') else None
             video_path = await self._download(video_stream, work_dir, 'video')
             audio_path = await self._download(audio_stream, work_dir, 'audio')
-            output_name = f'{self._sanitize(await yt.title())}.{self.request.container}'
+            output_name = f'{self._sanitize(yt.title)}.{self.request.container}'
             output_path = self.download_dir / output_name
             await self._run_ffmpeg(video_path, audio_path, video_stream, audio_stream, output_path)
             self.filename = output_name

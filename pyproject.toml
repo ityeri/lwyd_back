@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.135.1",
     "pydantic>=2.12.5",
     "pytubefix>=10.11.0",
+    "reger>=0.1.3",
     "starlette>=0.52.1",
     "uvicorn>=0.41.0",
 ]

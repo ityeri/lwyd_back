@@ -1,3 +1,5 @@
+import logging
+
 import uvicorn
 from fastapi import APIRouter, FastAPI, Path
 from fastapi.responses import FileResponse
@@ -10,6 +12,9 @@ from lwyd_back.task_status import TaskStatus
 
 _CLIENTS = ('WEB', 'IOS', 'TV', 'WEB_EMBED', 'ANDROID_VR')
 _VIDEO_ID = Path(min_length=11, max_length=11)
+
+
+logger = logging.getLogger(__name__)
 
 
 class Server:
@@ -65,6 +70,7 @@ class Server:
             task = DownloadTask(video_id, request, self.config.download_dir)
             self._tasks[task.task_id] = task
             task.start()
+            logger.info('download task started: video_id=%s task_id=%s mode=%s container=%s', video_id, task.task_id, request.mode, request.container)
             return PreDownloadResponse(video_id=video_id, task_id=task.task_id, status=task.status.value)
 
         @router.get('/task/{task_id}')
