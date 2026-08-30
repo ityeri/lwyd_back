@@ -93,7 +93,7 @@ class DownloadTask:
     def _on_progress(self, stream, chunk: bytes, bytes_remaining: int) -> None:
         total = stream.filesize or stream.filesize_approx
         if total:
-            self.progress = min(0.99, 1.0 - bytes_remaining / total)
+            self.progress = min(0.99, max(self.progress or 0, 1.0 - bytes_remaining / total))
 
     async def _process_pytubefix(self, yt: YouTube, streams: StreamQuery) -> None:
         work_dir = self.download_dir / uuid.uuid4().hex
@@ -274,7 +274,7 @@ class DownloadTask:
             total = data.get('total_bytes') or data.get('total_bytes_estimate')
             downloaded = data.get('downloaded_bytes', 0)
             if total:
-                self.progress = min(0.99, downloaded / total)
+                self.progress = min(0.99, max(self.progress or 0, downloaded / total))
         elif data.get('status') == 'finished':
             self.progress = 0.99
 
