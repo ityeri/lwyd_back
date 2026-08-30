@@ -38,9 +38,13 @@ class DownloadTask:
     task: asyncio.Task | None = field(default=None, init=False)
 
     def start(self) -> None:
-        self.status = TaskStatus.PROCESSING
+        self.status = TaskStatus.WAIT
         self.progress = 0.0
         self.task = asyncio.create_task(self._run())
+
+    def cancel(self) -> None:
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
 
     async def _run(self) -> None:
         try:
@@ -48,6 +52,9 @@ class DownloadTask:
             self.status = TaskStatus.DONE
             self.progress = 1.0
             logger.info('download finished: task_id=%s filename=%s', self.task_id, self.filename)
+        except asyncio.CancelledError:
+            self.status = TaskStatus.CANCELLED
+            logger.info('download cancelled: task_id=%s', self.task_id)
         except Exception as exc:
             self.status = TaskStatus.ERROR
             self.error = str(exc)
@@ -56,11 +63,14 @@ class DownloadTask:
     async def _run_with_fallback(self) -> None:
         try:
             await self._run_pytubefix()
+        except asyncio.CancelledError:
+            raise
         except Exception as pytubefix_exc:
             logger.warning('pytubefix download failed, falling back to yt-dlp: task_id=%s error=%s', self.task_id, pytubefix_exc)
             await self._run_ytdlp()
 
     async def _run_pytubefix(self) -> None:
+        self.status = TaskStatus.FETCHING
         yt, streams = await self._create_youtube()
         await self._process_pytubefix(yt, streams)
 
@@ -91,8 +101,10 @@ class DownloadTask:
         try:
             video_stream = self._pick_video_stream(streams) if self.request.mode in ('video', 'both') else None
             audio_stream = self._pick_audio_stream(streams) if self.request.mode in ('audio', 'both') else None
+            self.status = TaskStatus.DOWNLOADING
             video_path = await self._download(video_stream, work_dir, 'video')
             audio_path = await self._download(audio_stream, work_dir, 'audio')
+            self.status = TaskStatus.PROCESSING
             output_name = f'{self._sanitize(yt.title)}.{self.request.container}'
             output_path = self.download_dir / output_name
             await self._run_ffmpeg(video_path, audio_path, video_stream, audio_stream, output_path)
@@ -248,7 +260,9 @@ class DownloadTask:
                 title = info.get('title') or self.video_id
                 return path, title
 
+        self.status = TaskStatus.DOWNLOADING
         path, title = await asyncio.to_thread(run)
+        self.status = TaskStatus.PROCESSING
         output_name = f'{self._sanitize(title)}.{path.suffix.lstrip(".")}'
         final_path = self.download_dir / output_name
         path.replace(final_path)

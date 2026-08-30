@@ -86,6 +86,21 @@ class Server:
                 filename=task.filename,
             )
 
+        @router.post('/cancel/{task_id}')
+        async def cancel(task_id: str) -> TaskStatusResponse:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return TaskStatusResponse(task_id=task_id, status=TaskStatus.ERROR.value, error='task not found')
+            task.cancel()
+            logger.info('download cancel requested: task_id=%s', task_id)
+            return TaskStatusResponse(
+                task_id=task_id,
+                status=task.status.value,
+                progress=task.progress,
+                error=task.error,
+                filename=task.filename,
+            )
+
         @router.get('/download/{task_id}')
         async def download(task_id: str) -> FileResponse:
             task = self._tasks.get(task_id)
