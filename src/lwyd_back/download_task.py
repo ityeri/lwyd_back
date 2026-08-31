@@ -132,6 +132,8 @@ class DownloadedMedia:
     audio_path: Path | None
     video_stream: Stream | None = None
     audio_stream: Stream | None = None
+    video_codec: VideoCodec | None = None
+    audio_codec: AudioCodec | None = None
 
 
 @dataclass
@@ -161,6 +163,7 @@ class DownloadTask:
         try:
             media = await self._acquire_media(work_dir)
             self.status = TaskStatus.POST_PROCESSING
+            self.progress = 0.7
             self.filename = await self._process_media(media)
             self.status = TaskStatus.DONE
             self.progress = 1.0
@@ -188,10 +191,12 @@ class DownloadTask:
 
     async def _acquire_pytubefix(self, work_dir: Path) -> DownloadedMedia:
         self.status = TaskStatus.FETCHING
+        self.progress = 0.05
         yt, streams = await asyncio.to_thread(create_youtube_sync, self.video_id, self._on_progress)
         video_stream = self._pick_video_stream(streams) if self.request.mode in (Mode.VIDEO, Mode.BOTH) else None
         audio_stream = self._pick_audio_stream(streams) if self.request.mode in (Mode.AUDIO, Mode.BOTH) else None
         self.status = TaskStatus.DOWNLOADING
+        self.progress = 0.1
         video_path = await self._download_stream(video_stream, work_dir, 'video')
         audio_path = await self._download_stream(audio_stream, work_dir, 'audio')
         return DownloadedMedia(title=yt.title, video_path=video_path, audio_path=audio_path, video_stream=video_stream, audio_stream=audio_stream)
@@ -236,7 +241,7 @@ class DownloadTask:
                 'progress_hooks': [self._on_ytdlp_progress],
             }
 
-        def run() -> tuple[Path, str]:
+        def run() -> tuple[Path, str, str | None, str | None]:
             with YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
@@ -244,12 +249,19 @@ class DownloadTask:
                 if not path.exists() and info.get('requested_downloads'):
                     path = Path(info['requested_downloads'][0].get('filepath', str(path)))
                 title = info.get('title') or self.video_id
-                return path, title
+                return path, title, info.get('vcodec'), info.get('acodec')
 
         self.status = TaskStatus.DOWNLOADING
-        path, title = await asyncio.to_thread(run)
+        self.progress = 0.1
+        path, title, vcodec, acodec = await asyncio.to_thread(run)
         is_audio = mode == Mode.AUDIO or container.is_audio_only
-        return DownloadedMedia(title=title, video_path=None if is_audio else path, audio_path=path if is_audio else None)
+        return DownloadedMedia(
+            title=title,
+            video_path=None if is_audio else path,
+            audio_path=path if is_audio else None,
+            video_codec=None if is_audio else self._video_codec_from_string(vcodec),
+            audio_codec=self._audio_codec_from_string(acodec),
+        )
 
     async def _download_stream(self, stream: Stream | None, work_dir: Path, name: str) -> Path | None:
         if stream is None:
@@ -260,25 +272,29 @@ class DownloadTask:
     def _on_progress(self, stream, chunk: bytes, bytes_remaining: int) -> None:
         total = stream.filesize or stream.filesize_approx
         if total:
-            self.progress = min(0.95, max(self.progress or 0, 1.0 - bytes_remaining / total))
+            self.progress = 0.1 + 0.6 * (1.0 - bytes_remaining / total)
 
     def _on_ytdlp_progress(self, data: dict) -> None:
         if data.get('status') == 'downloading':
             total = data.get('total_bytes') or data.get('total_bytes_estimate')
             downloaded = data.get('downloaded_bytes', 0)
             if total:
-                self.progress = min(0.95, max(self.progress or 0, downloaded / total))
+                self.progress = 0.1 + 0.6 * (downloaded / total)
         elif data.get('status') == 'finished':
-            self.progress = 0.95
+            self.progress = 0.7
 
     async def _process_media(self, media: DownloadedMedia) -> str:
         output_name = f'{self._sanitize(media.title)}.{self.request.container.value}'
         output_path = self.download_dir / output_name
-        await self._run_ffmpeg(media.video_path, media.audio_path, media.video_stream, media.audio_stream, output_path)
+        await self._run_ffmpeg(media, output_path)
         return output_name
 
-    async def _run_ffmpeg(self, video_path: Path | None, audio_path: Path | None, video_stream: Stream | None, audio_stream: Stream | None, output_path: Path) -> None:
+    async def _run_ffmpeg(self, media: DownloadedMedia, output_path: Path) -> None:
         container = self.request.container
+        video_path = media.video_path
+        audio_path = media.audio_path
+        video_codec = media.video_codec or self._video_codec_of(media.video_stream)
+        audio_codec = media.audio_codec or self._audio_codec_of(media.audio_stream)
         command = ['ffmpeg', '-y', '-nostats', '-progress', 'pipe:1']
         if video_path:
             command += ['-i', str(video_path)]
@@ -286,7 +302,7 @@ class DownloadTask:
             command += ['-i', str(audio_path)]
         if video_path and audio_path:
             command += ['-map', '0:v:0', '-map', '1:a:0']
-            command += self._merge_codec_args(container, video_stream, audio_stream)
+            command += self._merge_codec_args(container, video_codec, audio_codec)
             if container in (Container.MP4, Container.MOV, Container.WEBM):
                 command += ['-shortest']
         elif audio_path and not video_path:
@@ -299,7 +315,6 @@ class DownloadTask:
                 command += ['-c', 'copy']
         elif video_path and not audio_path:
             command += ['-an']
-            video_codec = self._video_codec_of(video_stream)
             if container == Container.MKV or video_codec == VideoCodec.H264:
                 command += ['-c:v', 'copy']
             elif container in (Container.MP4, Container.MOV):
@@ -309,7 +324,7 @@ class DownloadTask:
         else:
             raise RuntimeError('nothing to download')
         command += [str(output_path)]
-        self.progress = 0.95
+        self.progress = 0.7
         duration_ms = await self._probe_duration_ms(video_path or audio_path)
         process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stderr_lines: list[str] = []
@@ -327,7 +342,7 @@ class DownloadTask:
                     out_ms = int(text.split('=', 1)[1]) // 1000
                     if duration_ms > 0:
                         ratio = min(1.0, out_ms / duration_ms)
-                        self.progress = min(0.99, max(self.progress or 0, 0.95 + 0.04 * ratio))
+                        self.progress = 0.7 + 0.29 * ratio
                 except ValueError:
                     pass
         await stderr_task
@@ -349,11 +364,9 @@ class DownloadTask:
         except Exception:
             return 0
 
-    def _merge_codec_args(self, container: Container, video_stream: Stream | None, audio_stream: Stream | None) -> list[str]:
+    def _merge_codec_args(self, container: Container, video_codec: VideoCodec | None, audio_codec: AudioCodec | None) -> list[str]:
         if container == Container.MKV:
             return ['-c', 'copy']
-        video_codec = self._video_codec_of(video_stream)
-        audio_codec = self._audio_codec_of(audio_stream)
         if container in (Container.MP4, Container.MOV):
             args = []
             args += ['-c:v', 'copy'] if video_codec == VideoCodec.H264 else ['-c:v', VideoCodec.H264.ffmpeg_encoder]
@@ -397,17 +410,41 @@ class DownloadTask:
         return max(candidates, key=lambda s: self._to_int(s.abr))
 
     @staticmethod
+    def _video_codec_from_string(codec: str | None) -> VideoCodec | None:
+        if not codec:
+            return None
+        lowered = codec.lower()
+        if 'avc1' in lowered or 'h264' in lowered:
+            return VideoCodec.H264
+        if 'vp9' in lowered or 'vp8' in lowered:
+            return VideoCodec.VP9
+        if 'av01' in lowered:
+            return VideoCodec.AV01
+        return None
+
+    @staticmethod
+    def _audio_codec_from_string(codec: str | None) -> AudioCodec | None:
+        if not codec:
+            return None
+        lowered = codec.lower()
+        if 'mp4a' in lowered or 'aac' in lowered:
+            return AudioCodec.AAC
+        if 'opus' in lowered:
+            return AudioCodec.OPUS
+        if 'vorbis' in lowered:
+            return AudioCodec.VORBIS
+        if 'mp3' in lowered:
+            return AudioCodec.MP3
+        return None
+
+    @staticmethod
     def _video_codec_of(stream: Stream | None) -> VideoCodec | None:
         if stream is None:
             return None
         for codec in stream.codecs:
-            lowered = codec.lower()
-            if 'avc1' in lowered or 'h264' in lowered:
-                return VideoCodec.H264
-            if 'vp9' in lowered or 'vp8' in lowered:
-                return VideoCodec.VP9
-            if 'av01' in lowered:
-                return VideoCodec.AV01
+            found = DownloadTask._video_codec_from_string(codec)
+            if found:
+                return found
         return None
 
     @staticmethod
@@ -415,15 +452,9 @@ class DownloadTask:
         if stream is None:
             return None
         for codec in stream.codecs:
-            lowered = codec.lower()
-            if 'mp4a' in lowered or 'aac' in lowered:
-                return AudioCodec.AAC
-            if 'opus' in lowered:
-                return AudioCodec.OPUS
-            if 'vorbis' in lowered:
-                return AudioCodec.VORBIS
-            if 'mp3' in lowered:
-                return AudioCodec.MP3
+            found = DownloadTask._audio_codec_from_string(codec)
+            if found:
+                return found
         return None
 
     @staticmethod
