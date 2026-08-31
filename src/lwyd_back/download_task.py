@@ -25,7 +25,7 @@ class TaskStatus(StrEnum):
     WAIT = 'WAIT'
     FETCHING = 'FETCHING'
     DOWNLOADING = 'DOWNLOADING'
-    PROCESSING = 'PROCESSING'
+    POST_PROCESSING = 'POST_PROCESSING'
     DONE = 'DONE'
     ERROR = 'ERROR'
     CANCELLED = 'CANCELLED'
@@ -160,7 +160,7 @@ class DownloadTask:
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             media = await self._acquire_media(work_dir)
-            self.status = TaskStatus.PROCESSING
+            self.status = TaskStatus.POST_PROCESSING
             self.filename = await self._process_media(media)
             self.status = TaskStatus.DONE
             self.progress = 1.0
@@ -260,16 +260,16 @@ class DownloadTask:
     def _on_progress(self, stream, chunk: bytes, bytes_remaining: int) -> None:
         total = stream.filesize or stream.filesize_approx
         if total:
-            self.progress = min(0.99, max(self.progress or 0, 1.0 - bytes_remaining / total))
+            self.progress = min(0.95, max(self.progress or 0, 1.0 - bytes_remaining / total))
 
     def _on_ytdlp_progress(self, data: dict) -> None:
         if data.get('status') == 'downloading':
             total = data.get('total_bytes') or data.get('total_bytes_estimate')
             downloaded = data.get('downloaded_bytes', 0)
             if total:
-                self.progress = min(0.99, max(self.progress or 0, downloaded / total))
+                self.progress = min(0.95, max(self.progress or 0, downloaded / total))
         elif data.get('status') == 'finished':
-            self.progress = 0.99
+            self.progress = 0.95
 
     async def _process_media(self, media: DownloadedMedia) -> str:
         output_name = f'{self._sanitize(media.title)}.{self.request.container.value}'
@@ -279,7 +279,7 @@ class DownloadTask:
 
     async def _run_ffmpeg(self, video_path: Path | None, audio_path: Path | None, video_stream: Stream | None, audio_stream: Stream | None, output_path: Path) -> None:
         container = self.request.container
-        command = ['ffmpeg', '-y']
+        command = ['ffmpeg', '-y', '-nostats', '-progress', 'pipe:1']
         if video_path:
             command += ['-i', str(video_path)]
         if audio_path:
@@ -309,11 +309,45 @@ class DownloadTask:
         else:
             raise RuntimeError('nothing to download')
         command += [str(output_path)]
-        self.progress = 0.99
+        self.progress = 0.95
+        duration_ms = await self._probe_duration_ms(video_path or audio_path)
         process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr = await process.communicate()
+        stderr_lines: list[str] = []
+
+        async def drain_stderr() -> None:
+            async for line in process.stderr:
+                stderr_lines.append(line.decode(errors='replace'))
+
+        stderr_task = asyncio.create_task(drain_stderr())
+        async for line in process.stdout:
+            text = line.decode(errors='replace').strip()
+            if text.startswith('out_time_ms='):
+                try:
+                    # ffmpeg reports microseconds despite the 'ms' name
+                    out_ms = int(text.split('=', 1)[1]) // 1000
+                    if duration_ms > 0:
+                        ratio = min(1.0, out_ms / duration_ms)
+                        self.progress = min(0.99, max(self.progress or 0, 0.95 + 0.04 * ratio))
+                except ValueError:
+                    pass
+        await stderr_task
+        await process.wait()
         if process.returncode != 0:
-            raise RuntimeError(stderr.decode(errors='replace')[-1000:])
+            raise RuntimeError(''.join(stderr_lines)[-1000:])
+
+    async def _probe_duration_ms(self, path: Path | None) -> int:
+        if path is None:
+            return 0
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await process.communicate()
+            return int(float(stdout.decode().strip()) * 1000)
+        except Exception:
+            return 0
 
     def _merge_codec_args(self, container: Container, video_stream: Stream | None, audio_stream: Stream | None) -> list[str]:
         if container == Container.MKV:
