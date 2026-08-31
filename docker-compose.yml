@@ -8,11 +8,20 @@ services:
     environment:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8000
-      SERVER_ALLOW_ORIGINS: ${SERVER_ALLOW_ORIGINS:-http://localhost:5173}
+      SERVER_ALLOW_ORIGINS: ${SERVER_ALLOW_ORIGINS:-http://localhost}
       DOWNLOAD_DIR: /app/downloads
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - lwyd-downloads:/app/downloads
+
+  lwyd-front:
+    build: ../lwyd-webfront
+    container_name: lwyd-front
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - lwyd-back
 
 volumes:
   lwyd-downloads:
