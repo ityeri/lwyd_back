@@ -1,41 +1,33 @@
-import asyncio
 import logging
-import time
-from pathlib import Path
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Path
 from fastapi.responses import FileResponse
-from pytubefix import AsyncYouTube
 
+from lwyd_back.api.schemas import DownloadRequest, PreDownloadResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
 from lwyd_back.config import Config
-from lwyd_back.download_task import DownloadTask
-from lwyd_back.enums import AudioCodec, Container, VideoCodec
-from lwyd_back.schemas import DownloadRequest, PreDownloadResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
-from lwyd_back.task_status import TaskStatus
+from lwyd_back.download_task import DownloadTask, TaskStatus
+from lwyd_back.youtube_fetcher import create_youtube_async
 
-_CLIENTS = ('WEB', 'IOS', 'TV', 'WEB_EMBED', 'ANDROID_VR')
 _VIDEO_ID = Path(min_length=11, max_length=11)
-_GC_MAX_AGE_SECONDS = 24 * 60 * 60
-_GC_INTERVAL_SECONDS = 60 * 60
-
 
 logger = logging.getLogger(__name__)
 
 
-class Server:
+class ApiServer:
     def __init__(self, config: Config):
         self.config: Config = config
         self._app: FastAPI = FastAPI()
         self._tasks: dict[str, DownloadTask] = {}
-        self._gc_task: asyncio.Task | None = None
 
-    def init(self):
+    def init(self) -> FastAPI:
+        for middleware in self.config.middlewares:
+            self._app.add_middleware(middleware.middleware_class, **middleware.kwargs)
         router = APIRouter(prefix='/api')
 
         @router.post('/info/{video_id}')
         async def info(video_id: str = _VIDEO_ID) -> VideoInfoResponse:
-            yt = await _create_youtube(video_id)
+            yt = await create_youtube_async(video_id)
             try:
                 streams = await yt.streams()
                 video_streams = [
@@ -122,7 +114,6 @@ class Server:
         return self._app
 
     async def start(self) -> None:
-        self._gc_task = asyncio.create_task(self._gc_loop())
         server_config = uvicorn.Config(
             self._app,
             host=self.config.server_host,
@@ -130,33 +121,3 @@ class Server:
             log_level=self.config.log_level,
         )
         await uvicorn.Server(server_config).serve()
-
-    async def _gc_loop(self) -> None:
-        while True:
-            await asyncio.sleep(_GC_INTERVAL_SECONDS)
-            self._gc_downloads()
-
-    def _gc_downloads(self) -> None:
-        cutoff = time.time() - _GC_MAX_AGE_SECONDS
-        removed = 0
-        for path in self.config.download_dir.iterdir():
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-                removed += 1
-        if removed:
-            logger.info('download gc: removed %d stale files', removed)
-
-
-async def _create_youtube(video_id: str) -> AsyncYouTube:
-    url = f'https://www.youtube.com/watch?v={video_id}'
-    last_error: Exception | None = None
-    for client in _CLIENTS:
-        try:
-            yt = AsyncYouTube(url, client=client)
-            await yt.streams()
-            logger.info('youtube client ok: video_id=%s client=%s', video_id, client)
-            return yt
-        except Exception as exc:
-            logger.warning('youtube client failed: video_id=%s client=%s error=%s', video_id, client, exc)
-            last_error = exc
-    raise last_error

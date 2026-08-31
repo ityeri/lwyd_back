@@ -1,27 +1,35 @@
-import asyncio
-import logging
-
-import reger
-
+from lwyd_back.bootstrap import Bootstrapper
 from lwyd_back.config import Config, MiddlewareMeta, get_dotenv_config
-from lwyd_back.enums import AudioCodec, Container, Mode, VideoCodec
-from lwyd_back.server import Server
-from lwyd_back.task_status import TaskStatus
+from lwyd_back.download_task import AudioCodec, Container, DownloadTask, Mode, TaskStatus, VideoCodec
+from lwyd_back.root_container import RootContainer
+
+from lwyd_back import api
+from lwyd_back import gc
 
 
 def main():
-    config: Config = get_dotenv_config()
-    reger.setup_logging(level=config.log_level.upper())
-    server = Server(config)
-    server.init()
-    asyncio.run(server.start())
+    container = RootContainer()
+    bootstrapper = Bootstrapper(container)
+
+    bootstrapper.run()
 
 
 __all__ = [
-    'Server',
+    'RootContainer',
+    'Bootstrapper',
     'Config',
     'MiddlewareMeta',
     'get_dotenv_config',
+
+    'DownloadTask',
     'TaskStatus',
+    'Mode',
+    'VideoCodec',
+    'AudioCodec',
+    'Container',
+
+    'api',
+    'gc',
+
     'main',
 ]

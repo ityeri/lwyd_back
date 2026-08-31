@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from lwyd_back.enums import AudioCodec, Container, Mode, VideoCodec
+from lwyd_back.download_task import AudioCodec, Container, Mode, VideoCodec
 
 
 class StreamInfo(BaseModel):
