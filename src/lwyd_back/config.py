@@ -18,6 +18,7 @@ class Config:
     server_host: str
     server_port: int
     download_dir: Path
+    log_level: str = 'info'
     middlewares: list[MiddlewareMeta] = field(default_factory=list)
 
 
@@ -29,6 +30,7 @@ def get_dotenv_config() -> Config:
         server_host=os.getenv('SERVER_HOST'),
         server_port=int(os.getenv('SERVER_PORT')),
         download_dir=Path(os.getenv('DOWNLOAD_DIR', 'downloads')),
+        log_level=os.getenv('LOG_LEVEL', 'info').lower(),
         middlewares=[
             MiddlewareMeta(
                 CORSMiddleware,

@@ -10,18 +10,37 @@ from pytubefix.query import StreamQuery
 from pytubefix.streams import Stream
 from yt_dlp import YoutubeDL
 
-from lwyd_back.schemes import DownloadRequest
+from lwyd_back.enums import AudioCodec, Container, Mode, VideoCodec
+from lwyd_back.schemas import DownloadRequest
 from lwyd_back.task_status import TaskStatus
 
 logger = logging.getLogger(__name__)
 
 _CLIENTS = ('WEB', 'IOS', 'TV', 'WEB_EMBED', 'ANDROID_VR')
 _AUDIO_ENCODERS = {
-    'mp3': 'libmp3lame',
-    'wav': 'pcm_s16le',
-    'flac': 'flac',
-    'ogg': 'libvorbis',
-    'm4a': 'aac',
+    Container.MP3: 'libmp3lame',
+    Container.WAV: 'pcm_s16le',
+    Container.FLAC: 'flac',
+    Container.OGG: 'libvorbis',
+    Container.M4A: 'aac',
+}
+_AUDIO_YTDLP_CODEC = {
+    Container.MP3: 'mp3',
+    Container.WAV: 'wav',
+    Container.FLAC: 'flac',
+    Container.OGG: 'vorbis',
+    Container.M4A: 'aac',
+}
+_CODEC_VIDEO_FFMPEG = {
+    VideoCodec.H264: 'libx264',
+    VideoCodec.VP9: 'libvpx-vp9',
+    VideoCodec.AV01: 'libaom-av1',
+}
+_CODEC_AUDIO_FFMPEG = {
+    AudioCodec.AAC: 'aac',
+    AudioCodec.OPUS: 'libopus',
+    AudioCodec.VORBIS: 'libvorbis',
+    AudioCodec.MP3: 'libmp3lame',
 }
 
 
@@ -99,13 +118,13 @@ class DownloadTask:
         work_dir = self.download_dir / uuid.uuid4().hex
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
-            video_stream = self._pick_video_stream(streams) if self.request.mode in ('video', 'both') else None
-            audio_stream = self._pick_audio_stream(streams) if self.request.mode in ('audio', 'both') else None
+            video_stream = self._pick_video_stream(streams) if self.request.mode in (Mode.VIDEO, Mode.BOTH) else None
+            audio_stream = self._pick_audio_stream(streams) if self.request.mode in (Mode.AUDIO, Mode.BOTH) else None
             self.status = TaskStatus.DOWNLOADING
             video_path = await self._download(video_stream, work_dir, 'video')
             audio_path = await self._download(audio_stream, work_dir, 'audio')
             self.status = TaskStatus.PROCESSING
-            output_name = f'{self._sanitize(yt.title)}.{self.request.container}'
+            output_name = f'{self._sanitize(yt.title)}.{self.request.container.value}'
             output_path = self.download_dir / output_name
             await self._run_ffmpeg(video_path, audio_path, video_stream, audio_stream, output_path)
             self.filename = output_name
@@ -126,13 +145,13 @@ class DownloadTask:
             raise RuntimeError('no video stream available')
         video_only = [s for s in candidates if not s.is_progressive]
         candidates = video_only or candidates
-        target = self.request.video_resolution
+        target = self._to_int(self.request.video_resolution)
         codec = self.request.video_codec
         if target:
-            matched = [s for s in candidates if self._to_int(s.resolution) == self._to_int(target)]
+            matched = [s for s in candidates if self._to_int(s.resolution) == target]
             candidates = matched or candidates
         if codec:
-            matched = [s for s in candidates if self._codec_matches(s.codecs, codec)]
+            matched = [s for s in candidates if self._video_codec_of(s) == codec]
             candidates = matched or candidates
         return max(candidates, key=lambda s: self._to_int(s.resolution))
 
@@ -140,13 +159,13 @@ class DownloadTask:
         candidates = [s for s in streams if s.type == 'audio']
         if not candidates:
             raise RuntimeError('no audio stream available')
-        target = self.request.audio_bitrate
+        target = self._to_int(self.request.audio_bitrate)
         codec = self.request.audio_codec
         if target:
-            matched = [s for s in candidates if self._to_int(s.abr) == self._to_int(target)]
+            matched = [s for s in candidates if self._to_int(s.abr) == target]
             candidates = matched or candidates
         if codec:
-            matched = [s for s in candidates if self._codec_matches(s.codecs, codec)]
+            matched = [s for s in candidates if self._audio_codec_of(s) == codec]
             candidates = matched or candidates
         return max(candidates, key=lambda s: self._to_int(s.abr))
 
@@ -159,23 +178,23 @@ class DownloadTask:
             command += ['-i', str(audio_path)]
         if video_path and audio_path:
             command += ['-map', '0:v:0', '-map', '1:a:0']
-        if video_path and audio_path:
             command += self._merge_codec_args(container, video_stream, audio_stream)
-            if container in ('mp4', 'mov', 'webm'):
+            if container in (Container.MP4, Container.MOV, Container.WEBM):
                 command += ['-shortest']
         elif audio_path and not video_path:
             command += ['-vn']
             if container in _AUDIO_ENCODERS:
                 command += ['-c:a', _AUDIO_ENCODERS[container]]
-            elif container in ('mp4', 'mov'):
+            elif container in (Container.MP4, Container.MOV):
                 command += ['-c:a', 'aac']
             else:
                 command += ['-c', 'copy']
         elif video_path and not audio_path:
             command += ['-an']
-            if container == 'mkv' or self._is_h264(video_stream):
+            video_codec = self._video_codec_of(video_stream)
+            if container == Container.MKV or video_codec == VideoCodec.H264:
                 command += ['-c:v', 'copy']
-            elif container in ('mp4', 'mov'):
+            elif container in (Container.MP4, Container.MOV):
                 command += ['-c:v', 'libx264']
             else:
                 command += ['-c:v', 'libvpx-vp9']
@@ -188,18 +207,20 @@ class DownloadTask:
         if process.returncode != 0:
             raise RuntimeError(stderr.decode(errors='replace')[-1000:])
 
-    def _merge_codec_args(self, container: str, video_stream: Stream | None, audio_stream: Stream | None) -> list[str]:
-        if container == 'mkv':
+    def _merge_codec_args(self, container: Container, video_stream: Stream | None, audio_stream: Stream | None) -> list[str]:
+        if container == Container.MKV:
             return ['-c', 'copy']
-        if container in ('mp4', 'mov'):
+        video_codec = self._video_codec_of(video_stream)
+        audio_codec = self._audio_codec_of(audio_stream)
+        if container in (Container.MP4, Container.MOV):
             args = []
-            args += ['-c:v', 'copy'] if self._is_h264(video_stream) else ['-c:v', 'libx264']
-            args += ['-c:a', 'copy'] if self._is_aac(audio_stream) else ['-c:a', 'aac']
+            args += ['-c:v', 'copy'] if video_codec == VideoCodec.H264 else ['-c:v', _CODEC_VIDEO_FFMPEG[VideoCodec.H264]]
+            args += ['-c:a', 'copy'] if audio_codec == AudioCodec.AAC else ['-c:a', _CODEC_AUDIO_FFMPEG[AudioCodec.AAC]]
             return args
-        if container == 'webm':
+        if container == Container.WEBM:
             args = []
-            args += ['-c:v', 'copy'] if self._is_vp9(video_stream) else ['-c:v', 'libvpx-vp9']
-            args += ['-c:a', 'copy'] if self._is_opus(audio_stream) else ['-c:a', 'libopus']
+            args += ['-c:v', 'copy'] if video_codec in (VideoCodec.VP9, VideoCodec.AV01) else ['-c:v', _CODEC_VIDEO_FFMPEG[VideoCodec.VP9]]
+            args += ['-c:a', 'copy'] if audio_codec in (AudioCodec.OPUS, AudioCodec.VORBIS) else ['-c:a', _CODEC_AUDIO_FFMPEG[AudioCodec.OPUS]]
             return args
         return ['-c', 'copy']
 
@@ -212,20 +233,14 @@ class DownloadTask:
         work_dir.mkdir(parents=True, exist_ok=True)
         output_template = str(work_dir / 'download.%(ext)s')
 
-        if mode == 'audio' or container in _AUDIO_ENCODERS:
+        if mode == Mode.AUDIO or container.is_audio_only:
             format_selector = 'bestaudio/best'
-        elif mode == 'video':
-            if resolution:
-                format_selector = f'bestvideo[height<={resolution}]/bestvideo/best'
-            else:
-                format_selector = 'bestvideo/best'
+        elif mode == Mode.VIDEO:
+            format_selector = f'bestvideo[height<={resolution}]/bestvideo/best' if resolution else 'bestvideo/best'
         else:
-            if resolution:
-                format_selector = f'bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best'
-            else:
-                format_selector = 'bestvideo+bestaudio/best'
+            format_selector = f'bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best' if resolution else 'bestvideo+bestaudio/best'
 
-        if container in _AUDIO_ENCODERS:
+        if container.is_audio_only:
             options = {
                 'quiet': True,
                 'no_warnings': True,
@@ -234,7 +249,7 @@ class DownloadTask:
                 'noprogress': True,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
-                    'preferredcodec': container,
+                    'preferredcodec': _AUDIO_YTDLP_CODEC[container],
                     'preferredquality': '192',
                 }],
                 'progress_hooks': [self._on_ytdlp_progress],
@@ -245,7 +260,7 @@ class DownloadTask:
                 'no_warnings': True,
                 'format': format_selector,
                 'outtmpl': output_template,
-                'merge_output_format': container,
+                'merge_output_format': container.value,
                 'noprogress': True,
                 'progress_hooks': [self._on_ytdlp_progress],
             }
@@ -279,20 +294,34 @@ class DownloadTask:
             self.progress = 0.99
 
     @staticmethod
-    def _is_h264(stream: Stream | None) -> bool:
-        return stream is not None and any('avc1' in c or 'h264' in c for c in stream.codecs)
+    def _video_codec_of(stream: Stream | None) -> VideoCodec | None:
+        if stream is None:
+            return None
+        for codec in stream.codecs:
+            lowered = codec.lower()
+            if 'avc1' in lowered or 'h264' in lowered:
+                return VideoCodec.H264
+            if 'vp9' in lowered or 'vp8' in lowered:
+                return VideoCodec.VP9
+            if 'av01' in lowered:
+                return VideoCodec.AV01
+        return None
 
     @staticmethod
-    def _is_aac(stream: Stream | None) -> bool:
-        return stream is not None and any('mp4a' in c or 'aac' in c for c in stream.codecs)
-
-    @staticmethod
-    def _is_vp9(stream: Stream | None) -> bool:
-        return stream is not None and any('vp9' in c or 'vp8' in c or 'av01' in c for c in stream.codecs)
-
-    @staticmethod
-    def _is_opus(stream: Stream | None) -> bool:
-        return stream is not None and any('opus' in c or 'vorbis' in c for c in stream.codecs)
+    def _audio_codec_of(stream: Stream | None) -> AudioCodec | None:
+        if stream is None:
+            return None
+        for codec in stream.codecs:
+            lowered = codec.lower()
+            if 'mp4a' in lowered or 'aac' in lowered:
+                return AudioCodec.AAC
+            if 'opus' in lowered:
+                return AudioCodec.OPUS
+            if 'vorbis' in lowered:
+                return AudioCodec.VORBIS
+            if 'mp3' in lowered:
+                return AudioCodec.MP3
+        return None
 
     @staticmethod
     def _sanitize(title: str) -> str:
@@ -304,7 +333,3 @@ class DownloadTask:
             return 0
         match = re.search(r'\d+', value)
         return int(match.group()) if match else 0
-
-    @staticmethod
-    def _codec_matches(codecs: list[str], target: str) -> bool:
-        return any(target.lower() in codec.lower() for codec in codecs)

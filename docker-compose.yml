@@ -1,0 +1,18 @@
+services:
+  lwyd-back:
+    build: .
+    container_name: lwyd-back
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8000
+      SERVER_ALLOW_ORIGINS: ${SERVER_ALLOW_ORIGINS:-http://localhost:5173}
+      DOWNLOAD_DIR: /app/downloads
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - lwyd-downloads:/app/downloads
+
+volumes:
+  lwyd-downloads:

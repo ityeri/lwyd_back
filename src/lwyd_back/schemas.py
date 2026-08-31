@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from lwyd_back.enums import AudioCodec, Container, Mode, VideoCodec
+
 
 class StreamInfo(BaseModel):
     itag: int
@@ -21,12 +23,12 @@ class VideoInfoResponse(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    mode: str = 'both'
+    mode: Mode = Mode.BOTH
     video_resolution: str | None = None
-    video_codec: str | None = None
+    video_codec: VideoCodec | None = None
     audio_bitrate: str | None = None
-    audio_codec: str | None = None
-    container: str = 'mp4'
+    audio_codec: AudioCodec | None = None
+    container: Container = Container.MP4
 
 
 class PreDownloadResponse(BaseModel):
