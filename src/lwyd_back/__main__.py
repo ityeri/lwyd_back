@@ -1,8 +1,5 @@
-import pytubefix
-from pytubefix import Stream
+from lwyd_back import main
 
-yt = pytubefix.YouTube('https://www.youtube.com/watch?v=OC7hwUCzPiw')
 
-for stream in yt.streams:
-    stream: Stream
-    print(f'res: {stream.resolution} | abr: {stream.abr}')
+if __name__ == '__main__':
+    main()
