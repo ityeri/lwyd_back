@@ -24,7 +24,7 @@ class Config:
 
 def get_dotenv_config() -> Config:
     dotenv.load_dotenv()
-    allow_origins = os.getenv('SERVER_ALLOW_ORIGINS').split()
+    allow_origins = (os.getenv('SERVER_ALLOW_ORIGINS') or '').split()
 
     return Config(
         server_host=os.getenv('SERVER_HOST'),
