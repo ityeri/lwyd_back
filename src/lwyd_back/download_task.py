@@ -195,6 +195,10 @@ class DownloadTask:
         yt, streams = await asyncio.to_thread(create_youtube_sync, self.video_id, self._on_progress)
         video_stream = self._pick_video_stream(streams) if self.request.mode in (Mode.VIDEO, Mode.BOTH) else None
         audio_stream = self._pick_audio_stream(streams) if self.request.mode in (Mode.AUDIO, Mode.BOTH) else None
+        # SABR streams are guaranteed to fail pytubefix download (PoToken INVALID),
+        # so bail out right after metadata fetch and let the yt-dlp fallback handle it.
+        if any(stream is not None and getattr(stream, 'is_sabr', False) for stream in (video_stream, audio_stream)):
+            raise RuntimeError('SABR stream detected, switching to yt-dlp')
         self.status = TaskStatus.DOWNLOADING
         self.progress = 0.1
         video_path = await self._download_stream(video_stream, work_dir, 'video')
