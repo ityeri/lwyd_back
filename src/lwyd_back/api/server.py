@@ -126,5 +126,6 @@ class ApiServer:
             host=self.config.server_host,
             port=self.config.server_port,
             log_level=self.config.log_level,
+            log_config=None # To make uvicorn using the root logger setting
         )
         await uvicorn.Server(server_config).serve()
