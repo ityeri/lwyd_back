@@ -1,13 +1,15 @@
+import asyncio
 import logging
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Path
+import ydpy
+from fastapi import APIRouter, FastAPI, HTTPException, Path
 from fastapi.responses import FileResponse
+from yspy import Video, VideoState
 
 from lwyd_back.api.schemas import DownloadRequest, PreDownloadResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
 from lwyd_back.config import Config
 from lwyd_back.download_task import DownloadTask, TaskStatus
-from lwyd_back.youtube_fetcher import create_youtube_async
 
 _VIDEO_ID = Path(min_length=11, max_length=11)
 
@@ -27,42 +29,47 @@ class ApiServer:
 
         @router.post('/info/{video_id}')
         async def info(video_id: str = _VIDEO_ID) -> VideoInfoResponse:
-            yt = await create_youtube_async(video_id)
-            try:
-                streams = await yt.streams()
-                video_streams = [
-                    StreamInfo(
-                        itag=stream.itag,
-                        type='video',
-                        resolution=stream.resolution,
-                        codec=', '.join(stream.codecs),
-                        container=stream.subtype,
-                        fps=stream.fps,
-                    )
-                    for stream in streams
-                    if stream.type == 'video'
-                ]
-                audio_streams = [
-                    StreamInfo(
-                        itag=stream.itag,
-                        type='audio',
-                        abr=stream.abr,
-                        codec=', '.join(stream.codecs),
-                        container=stream.subtype,
-                    )
-                    for stream in streams
-                    if stream.type == 'audio'
-                ]
-                return VideoInfoResponse(
-                    video_id=video_id,
-                    title=await yt.title(),
-                    thumbnail_url=await yt.thumbnail_url(),
-                    duration_seconds=await yt.length(),
-                    video_streams=video_streams,
-                    audio_streams=audio_streams,
+            video_task = asyncio.create_task(Video.aget(video_id))
+            streams_task = asyncio.create_task(ydpy.PlayableVideo.afetch(video_id))
+            video, state = await video_task
+            if state is not VideoState.OK:
+                logger.warning('video unavailable: video_id=%s state=%s', video_id, state.value)
+                raise HTTPException(status_code=404, detail=f'video unavailable: {state.value}')
+            pv = await streams_task
+            video_streams = [
+                StreamInfo(
+                    itag=fmt.itag,
+                    type='video',
+                    resolution=f'{fmt.height}p' if fmt.height else None,
+                    codec=fmt.codecs,
+                    container=fmt.container.value if fmt.container else None,
+                    fps=fmt.fps,
                 )
-            finally:
-                await yt.http_client.close()
+                for fmt in pv.formats
+                if fmt.is_video and not fmt.has_drm
+            ]
+            audio_streams = [
+                StreamInfo(
+                    itag=fmt.itag,
+                    type='audio',
+                    abr=f'{round((fmt.bitrate or 0) / 1000)}kbps' if fmt.bitrate else None,
+                    codec=fmt.codecs,
+                    container=fmt.container.value if fmt.container else None,
+                )
+                for fmt in pv.formats
+                if fmt.is_audio and not fmt.has_drm
+            ]
+            thumbnail_url = ''
+            if video is not None and video.thumbnails:
+                thumbnail_url = max(video.thumbnails, key=lambda t: t.width).url
+            return VideoInfoResponse(
+                video_id=video_id,
+                title=pv.title or '',
+                thumbnail_url=thumbnail_url,
+                duration_seconds=(pv.duration_ms or 0) // 1000,
+                video_streams=video_streams,
+                audio_streams=audio_streams,
+            )
 
         @router.post('/predownload/{video_id}')
         async def predownload(video_id: str, request: DownloadRequest) -> PreDownloadResponse:

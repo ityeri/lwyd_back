@@ -9,11 +9,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pytubefix.query import StreamQuery
-from pytubefix.streams import Stream
-from yt_dlp import YoutubeDL
-
-from lwyd_back.youtube_fetcher import create_youtube_sync
+import ydpy
+from ydpy import AudioCodec as YdAudioCodec
+from ydpy import Container as YdContainer
+from ydpy import DownloadOptions, Format, PlayableVideo, StreamingProtocol
+from ydpy import VideoCodec as YdVideoCodec
 
 if TYPE_CHECKING:
     from lwyd_back.api.schemas import DownloadRequest
@@ -113,16 +113,25 @@ class Container(StrEnum):
         }
         return encoders.get(self.value)
 
-    @property
-    def ytdlp_preferred_codec(self) -> str | None:
-        codecs = {
-            'mp3': 'mp3',
-            'wav': 'wav',
-            'flac': 'flac',
-            'ogg': 'vorbis',
-            'm4a': 'aac',
-        }
-        return codecs.get(self.value)
+
+def _to_lwyd_video_codec(codec: YdVideoCodec | None) -> VideoCodec | None:
+    mapping = {
+        YdVideoCodec.AVC1: VideoCodec.H264,
+        YdVideoCodec.VP8: VideoCodec.VP9,
+        YdVideoCodec.VP9: VideoCodec.VP9,
+        YdVideoCodec.AV01: VideoCodec.AV01,
+    }
+    return mapping.get(codec)
+
+
+def _to_lwyd_audio_codec(codec: YdAudioCodec | None) -> AudioCodec | None:
+    mapping = {
+        YdAudioCodec.MP4A: AudioCodec.AAC,
+        YdAudioCodec.OPUS: AudioCodec.OPUS,
+        YdAudioCodec.VORBIS: AudioCodec.VORBIS,
+        YdAudioCodec.MP3: AudioCodec.MP3,
+    }
+    return mapping.get(codec)
 
 
 @dataclass
@@ -130,8 +139,6 @@ class DownloadedMedia:
     title: str
     video_path: Path | None
     audio_path: Path | None
-    video_stream: Stream | None = None
-    audio_stream: Stream | None = None
     video_codec: VideoCodec | None = None
     audio_codec: AudioCodec | None = None
 
@@ -181,111 +188,85 @@ class DownloadTask:
             work_dir.rmdir()
 
     async def _acquire_media(self, work_dir: Path) -> DownloadedMedia:
-        try:
-            return await self._acquire_pytubefix(work_dir)
-        except asyncio.CancelledError:
-            raise
-        except Exception as pytubefix_exc:
-            logger.warning('pytubefix download failed, falling back to yt-dlp: task_id=%s error=%s', self.task_id, pytubefix_exc)
-            return await self._acquire_ytdlp(work_dir)
-
-    async def _acquire_pytubefix(self, work_dir: Path) -> DownloadedMedia:
         self.status = TaskStatus.FETCHING
         self.progress = 0.05
-        yt, streams = await asyncio.to_thread(create_youtube_sync, self.video_id, self._on_progress)
-        video_stream = self._pick_video_stream(streams) if self.request.mode in (Mode.VIDEO, Mode.BOTH) else None
-        audio_stream = self._pick_audio_stream(streams) if self.request.mode in (Mode.AUDIO, Mode.BOTH) else None
-        # SABR streams are guaranteed to fail pytubefix download (PoToken INVALID),
-        # so bail out right after metadata fetch and let the yt-dlp fallback handle it.
-        if any(stream is not None and getattr(stream, 'is_sabr', False) for stream in (video_stream, audio_stream)):
-            raise RuntimeError('SABR stream detected, switching to yt-dlp')
-        self.status = TaskStatus.DOWNLOADING
-        self.progress = 0.1
-        video_path = await self._download_stream(video_stream, work_dir, 'video')
-        audio_path = await self._download_stream(audio_stream, work_dir, 'audio')
-        return DownloadedMedia(title=yt.title, video_path=video_path, audio_path=audio_path, video_stream=video_stream, audio_stream=audio_stream)
-
-    async def _acquire_ytdlp(self, work_dir: Path) -> DownloadedMedia:
-        self.status = TaskStatus.FETCHING
         url = f'https://www.youtube.com/watch?v={self.video_id}'
-        container = self.request.container
-        mode = self.request.mode
-        resolution = self._to_int(self.request.video_resolution)
-        output_template = str(work_dir / 'download.%(ext)s')
-
-        if mode == Mode.AUDIO or container.is_audio_only:
-            format_selector = 'bestaudio/best'
-        elif mode == Mode.VIDEO:
-            format_selector = f'bestvideo[height<={resolution}]/bestvideo/best' if resolution else 'bestvideo/best'
-        else:
-            format_selector = f'bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/best' if resolution else 'bestvideo+bestaudio/best'
-
-        if container.is_audio_only:
-            options = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': format_selector,
-                'outtmpl': output_template,
-                'noprogress': True,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': container.ytdlp_preferred_codec,
-                    'preferredquality': '192',
-                }],
-                'progress_hooks': [self._on_ytdlp_progress],
-            }
-        else:
-            options = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': format_selector,
-                'outtmpl': output_template,
-                'merge_output_format': container.value,
-                'noprogress': True,
-                'progress_hooks': [self._on_ytdlp_progress],
-            }
-
-        def run() -> tuple[Path, str, str | None, str | None]:
-            with YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                path = Path(filename)
-                if not path.exists() and info.get('requested_downloads'):
-                    path = Path(info['requested_downloads'][0].get('filepath', str(path)))
-                title = info.get('title') or self.video_id
-                return path, title, info.get('vcodec'), info.get('acodec')
-
+        pv = await PlayableVideo.afetch(url)
+        logger.info('streams fetched: task_id=%s client=%s video=%s', self.task_id, pv.client, self.video_id)
+        fmt_video, fmt_audio = self._pick_formats(pv.formats)
         self.status = TaskStatus.DOWNLOADING
         self.progress = 0.1
-        path, title, vcodec, acodec = await asyncio.to_thread(run)
-        is_audio = mode == Mode.AUDIO or container.is_audio_only
+        video_path = await self._download_format(fmt_video, work_dir, 'video')
+        audio_path = await self._download_format(fmt_audio, work_dir, 'audio')
         return DownloadedMedia(
-            title=title,
-            video_path=None if is_audio else path,
-            audio_path=path if is_audio else None,
-            video_codec=None if is_audio else self._video_codec_from_string(vcodec),
-            audio_codec=self._audio_codec_from_string(acodec),
+            title=pv.title or self.video_id,
+            video_path=video_path,
+            audio_path=audio_path,
+            video_codec=_to_lwyd_video_codec(fmt_video.video_codec) if fmt_video else None,
+            audio_codec=_to_lwyd_audio_codec((fmt_audio or fmt_video).audio_codec) if (fmt_audio or fmt_video) else None,
         )
 
-    async def _download_stream(self, stream: Stream | None, work_dir: Path, name: str) -> Path | None:
-        if stream is None:
+    def _pick_formats(self, formats: list[Format]) -> tuple[Format | None, Format | None]:
+        clean = [f for f in formats if not f.has_drm and not f.is_damaged and f.url and f.protocol is StreamingProtocol.HTTPS]
+        videos = [f for f in clean if f.is_video]
+        audios = [f for f in clean if f.is_audio]
+        mode = self.request.mode
+        container = self.request.container
+
+        fmt_video: Format | None = None
+        fmt_audio: Format | None = None
+
+        if mode in (Mode.VIDEO, Mode.BOTH) and not container.is_audio_only:
+            fmt_video = self._pick_video_format(videos)
+            # adaptive video stream needs a separate audio stream for muxing
+            if fmt_video is not None and fmt_video.audio_codec is None and mode == Mode.BOTH:
+                fmt_audio = self._pick_audio_format(audios)
+        elif mode == Mode.AUDIO or container.is_audio_only:
+            fmt_audio = self._pick_audio_format(audios)
+
+        return fmt_video, fmt_audio
+
+    def _pick_video_format(self, candidates: list[Format]) -> Format | None:
+        if not candidates:
+            raise RuntimeError('no video stream available')
+        video_only = [f for f in candidates if f.audio_codec is None]
+        pool = video_only or candidates
+        target = self._to_int(self.request.video_resolution)
+        codec = self.request.video_codec
+        if target:
+            matched = [f for f in pool if (f.height or 0) == target]
+            pool = matched or pool
+        if codec:
+            matched = [f for f in pool if _to_lwyd_video_codec(f.video_codec) == codec]
+            pool = matched or pool
+        return max(pool, key=lambda f: f.height or 0)
+
+    def _pick_audio_format(self, candidates: list[Format]) -> Format | None:
+        if not candidates:
+            raise RuntimeError('no audio stream available')
+        codec = self.request.audio_codec
+        pool = candidates
+        if codec:
+            matched = [f for f in pool if _to_lwyd_audio_codec(f.audio_codec) == codec]
+            pool = matched or pool
+        target = self._to_int(self.request.audio_bitrate)
+        if target:
+            return min(pool, key=lambda f: abs((f.bitrate or 0) - target * 1000))
+        return max(pool, key=lambda f: f.bitrate or 0)
+
+    async def _download_format(self, fmt: Format | None, work_dir: Path, name: str) -> Path | None:
+        if fmt is None:
             return None
-        path = await asyncio.to_thread(stream.download, output_path=str(work_dir), filename=name, skip_existing=False)
-        return Path(path)
+        ext = fmt.container.value if fmt.container else 'bin'
+        target = work_dir / f'{name}.{ext}'
+        options = DownloadOptions(progress=self._on_ydpy_progress)
+        result = await fmt.adownload(target, options=options)
+        logger.info('stream downloaded: task_id=%s name=%s bytes=%d', self.task_id, name, result.bytes_written)
+        return target
 
-    def _on_progress(self, stream, chunk: bytes, bytes_remaining: int) -> None:
-        total = stream.filesize or stream.filesize_approx
-        if total:
-            self.progress = 0.1 + 0.6 * (1.0 - bytes_remaining / total)
-
-    def _on_ytdlp_progress(self, data: dict) -> None:
-        if data.get('status') == 'downloading':
-            total = data.get('total_bytes') or data.get('total_bytes_estimate')
-            downloaded = data.get('downloaded_bytes', 0)
-            if total:
-                self.progress = 0.1 + 0.6 * (downloaded / total)
-        elif data.get('status') == 'finished':
-            self.progress = 0.7
+    def _on_ydpy_progress(self, progress) -> None:
+        if progress.total:
+            self.progress = 0.1 + 0.6 * (progress.downloaded / progress.total)
 
     async def _process_media(self, media: DownloadedMedia) -> str:
         output_name = f'{self._sanitize(media.title)}.{self.request.container.value}'
@@ -297,8 +278,8 @@ class DownloadTask:
         container = self.request.container
         video_path = media.video_path
         audio_path = media.audio_path
-        video_codec = media.video_codec or self._video_codec_of(media.video_stream)
-        audio_codec = media.audio_codec or self._audio_codec_of(media.audio_stream)
+        video_codec = media.video_codec
+        audio_codec = media.audio_codec
         command = ['ffmpeg', '-y', '-nostats', '-progress', 'pipe:1']
         if video_path:
             command += ['-i', str(video_path)]
@@ -354,20 +335,6 @@ class DownloadTask:
         if process.returncode != 0:
             raise RuntimeError(''.join(stderr_lines)[-1000:])
 
-    async def _probe_duration_ms(self, path: Path | None) -> int:
-        if path is None:
-            return 0
-        try:
-            process = await asyncio.create_subprocess_exec(
-                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await process.communicate()
-            return int(float(stdout.decode().strip()) * 1000)
-        except Exception:
-            return 0
-
     def _merge_codec_args(self, container: Container, video_codec: VideoCodec | None, audio_codec: AudioCodec | None) -> list[str]:
         if container == Container.MKV:
             return ['-c', 'copy']
@@ -383,83 +350,19 @@ class DownloadTask:
             return args
         return ['-c', 'copy']
 
-    def _pick_video_stream(self, streams: StreamQuery) -> Stream:
-        candidates = [s for s in streams if s.type == 'video' and s.resolution]
-        if not candidates:
-            raise RuntimeError('no video stream available')
-        video_only = [s for s in candidates if not s.is_progressive]
-        candidates = video_only or candidates
-        target = self._to_int(self.request.video_resolution)
-        codec = self.request.video_codec
-        if target:
-            matched = [s for s in candidates if self._to_int(s.resolution) == target]
-            candidates = matched or candidates
-        if codec:
-            matched = [s for s in candidates if self._video_codec_of(s) == codec]
-            candidates = matched or candidates
-        return max(candidates, key=lambda s: self._to_int(s.resolution))
-
-    def _pick_audio_stream(self, streams: StreamQuery) -> Stream:
-        candidates = [s for s in streams if s.type == 'audio']
-        if not candidates:
-            raise RuntimeError('no audio stream available')
-        target = self._to_int(self.request.audio_bitrate)
-        codec = self.request.audio_codec
-        if target:
-            matched = [s for s in candidates if self._to_int(s.abr) == target]
-            candidates = matched or candidates
-        if codec:
-            matched = [s for s in candidates if self._audio_codec_of(s) == codec]
-            candidates = matched or candidates
-        return max(candidates, key=lambda s: self._to_int(s.abr))
-
-    @staticmethod
-    def _video_codec_from_string(codec: str | None) -> VideoCodec | None:
-        if not codec:
-            return None
-        lowered = codec.lower()
-        if 'avc1' in lowered or 'h264' in lowered:
-            return VideoCodec.H264
-        if 'vp9' in lowered or 'vp8' in lowered:
-            return VideoCodec.VP9
-        if 'av01' in lowered:
-            return VideoCodec.AV01
-        return None
-
-    @staticmethod
-    def _audio_codec_from_string(codec: str | None) -> AudioCodec | None:
-        if not codec:
-            return None
-        lowered = codec.lower()
-        if 'mp4a' in lowered or 'aac' in lowered:
-            return AudioCodec.AAC
-        if 'opus' in lowered:
-            return AudioCodec.OPUS
-        if 'vorbis' in lowered:
-            return AudioCodec.VORBIS
-        if 'mp3' in lowered:
-            return AudioCodec.MP3
-        return None
-
-    @staticmethod
-    def _video_codec_of(stream: Stream | None) -> VideoCodec | None:
-        if stream is None:
-            return None
-        for codec in stream.codecs:
-            found = DownloadTask._video_codec_from_string(codec)
-            if found:
-                return found
-        return None
-
-    @staticmethod
-    def _audio_codec_of(stream: Stream | None) -> AudioCodec | None:
-        if stream is None:
-            return None
-        for codec in stream.codecs:
-            found = DownloadTask._audio_codec_from_string(codec)
-            if found:
-                return found
-        return None
+    async def _probe_duration_ms(self, path: Path | None) -> int:
+        if path is None:
+            return 0
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await process.communicate()
+            return int(float(stdout.decode().strip()) * 1000)
+        except Exception:
+            return 0
 
     @staticmethod
     def _sanitize(title: str) -> str:
