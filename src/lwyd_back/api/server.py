@@ -9,7 +9,7 @@ from yspy import Video, VideoState
 
 from lwyd_back.api.schemas import DownloadRequest, DownloadStartResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
 from lwyd_back.config import Config
-from lwyd_back.download_task import DownloadTask, TaskStatus
+from lwyd_back.download_task import DownloadSpec, DownloadTask, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,16 @@ class ApiServer:
             if state is not VideoState.OK:
                 logger.warning('video unavailable: video_id=%s state=%s', video_id, state.value)
                 raise HTTPException(status_code=404, detail=f'video unavailable: {state.value}')
+            spec = DownloadSpec(
+                mode=request.mode,
+                container=request.container,
+                video_resolution=request.video_resolution,
+                video_codec=request.video_codec,
+                audio_bitrate=request.audio_bitrate,
+                audio_codec=request.audio_codec,
+            )
             duration_ms = (video.length_seconds or 0) * 1000 if video is not None else 0
-            task = DownloadTask(video_id=video_id, request=request, duration_ms=duration_ms, download_dir=self.config.download_dir)
+            task = DownloadTask(video_id=video_id, spec=spec, duration_ms=duration_ms, download_dir=self.config.download_dir)
             self._tasks[task.task_id] = task
             task.start()
             logger.info('download task started: task_id=%s video_id=%s mode=%s container=%s', task.task_id, video_id, request.mode.value, request.container.value)

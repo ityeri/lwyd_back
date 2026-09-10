@@ -7,15 +7,11 @@ import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ydpy import AudioCodec as YdAudioCodec
 from ydpy import DownloadOptions, Format, PlayableVideo, StreamingProtocol
 from ydpy import VideoCodec as YdVideoCodec
 from ydpy.downloader import DownloadProgress
-
-if TYPE_CHECKING:
-    from lwyd_back.api.schemas import DownloadRequest
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +139,21 @@ class DownloadedMedia:
 
 
 @dataclass
+class DownloadSpec:
+    """What to download and in which shape, free of any api layer type."""
+
+    mode: Mode = Mode.BOTH
+    container: Container = Container.MP4
+    video_resolution: str | None = None
+    video_codec: VideoCodec | None = None
+    audio_bitrate: str | None = None
+    audio_codec: AudioCodec | None = None
+
+
+@dataclass
 class DownloadTask:
     video_id: str
-    request: DownloadRequest
+    spec: DownloadSpec
     download_dir: Path
     duration_ms: int | None = None
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -219,7 +227,7 @@ class DownloadTask:
         ]
         video_formats = [f for f in valid_formats if f.is_video]
         audio_formats = [f for f in valid_formats if f.is_audio]
-        mode = self.request.mode
+        mode = self.spec.mode
 
         video_format: Format | None = None
         audio_format: Format | None = None
@@ -235,8 +243,8 @@ class DownloadTask:
         if not candidate_formats:
             raise RuntimeError('no video stream available')
 
-        target_resolution = self._to_int(self.request.video_resolution)
-        codec = self.request.video_codec
+        target_resolution = self._to_int(self.spec.video_resolution)
+        codec = self.spec.video_codec
 
         if target_resolution:
             matched = [f for f in candidate_formats if (f.height or 0) == target_resolution]
@@ -251,13 +259,13 @@ class DownloadTask:
         if not candidate_formats:
             raise RuntimeError('no audio stream available')
 
-        codec = self.request.audio_codec
+        codec = self.spec.audio_codec
 
         if codec:
             matched = [f for f in candidate_formats if _to_lwyd_audio_codec(f.audio_codec) == codec]
             candidate_formats = matched or candidate_formats
 
-        target_bitrate = self._to_int(self.request.audio_bitrate)
+        target_bitrate = self._to_int(self.spec.audio_bitrate)
         if target_bitrate:
             return min(candidate_formats, key=lambda f: abs((f.bitrate or 0) - target_bitrate * 1000))
 
@@ -278,13 +286,13 @@ class DownloadTask:
             self.progress = progress.downloaded / progress.total
 
     async def _post_process_media(self, media: DownloadedMedia) -> str:
-        output_name = f'{self._sanitize(media.title)}.{self.request.container.value}'
+        output_name = f'{self._sanitize(media.title)}.{self.spec.container.value}'
         output_path = self.download_dir / output_name
         await self._run_ffmpeg(media, output_path)
         return output_name
 
     async def _run_ffmpeg(self, media: DownloadedMedia, output_path: Path) -> None:
-        container = self.request.container
+        container = self.spec.container
         video_path = media.video_path
         audio_path = media.audio_path
         video_codec = media.video_codec
