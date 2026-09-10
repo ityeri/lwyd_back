@@ -9,7 +9,11 @@ from yspy import Video, VideoState
 
 from lwyd_back.api.schemas import DownloadRequest, PreDownloadResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
 from lwyd_back.config import Config
-from lwyd_back.download_task import DownloadTask, TaskStatus
+from lwyd_back.download_task import (
+    DownloadTask, TaskStatus,
+    copy_containers_for_audio, copy_containers_for_video,
+    to_lwyd_audio_codec, to_lwyd_video_codec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,7 @@ class ApiServer:
                     codec=fmt.codecs,
                     container=fmt.container.value if fmt.container else None,
                     fps=fmt.fps,
+                    copy_containers=copy_containers_for_video(to_lwyd_video_codec(fmt.video_codec)),
                 )
                 for fmt in pv.formats
                 if fmt.is_video and not fmt.has_drm
@@ -53,6 +58,7 @@ class ApiServer:
                     abr=f'{round((fmt.bitrate or 0) / 1000)}kbps' if fmt.bitrate else None,
                     codec=fmt.codecs,
                     container=fmt.container.value if fmt.container else None,
+                    copy_containers=copy_containers_for_audio(to_lwyd_audio_codec(fmt.audio_codec)),
                 )
                 for fmt in pv.formats
                 if fmt.is_audio and not fmt.has_drm

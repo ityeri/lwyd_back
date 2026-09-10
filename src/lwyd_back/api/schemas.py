@@ -11,6 +11,7 @@ class StreamInfo(BaseModel):
     codec: str | None = None
     container: str | None = None
     fps: int | None = None
+    copy_containers: list[str] = []
 
 
 class VideoInfoResponse(BaseModel):
