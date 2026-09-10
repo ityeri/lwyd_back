@@ -89,13 +89,16 @@ class Container(StrEnum):
 
     @property
     def audio_codecs(self) -> frozenset[AudioCodec]:
-        if self in (Container.MP4, Container.MOV):
+        if self in (Container.MP4, Container.MOV, Container.M4A):
             return frozenset({AudioCodec.AAC})
-        if self == Container.WEBM:
+        if self in (Container.WEBM, Container.OGG):
             return frozenset({AudioCodec.OPUS, AudioCodec.VORBIS})
         if self == Container.MP3:
             return frozenset({AudioCodec.MP3})
-        return frozenset({AudioCodec.AAC, AudioCodec.OPUS, AudioCodec.VORBIS})
+        if self == Container.MKV:
+            return frozenset({AudioCodec.AAC, AudioCodec.OPUS, AudioCodec.VORBIS})
+        # WAV/FLAC carry PCM/FLAC which has no matching lwyd audio codec
+        return frozenset()
 
     @property
     def ffmpeg_audio_encoder(self) -> str | None:
@@ -109,24 +112,41 @@ class Container(StrEnum):
         return encoders.get(self.value)
 
 
-def _to_lwyd_video_codec(codec: YdVideoCodec | None) -> VideoCodec | None:
-    mapping = {
-        YdVideoCodec.AVC1: VideoCodec.H264,
-        YdVideoCodec.VP8: VideoCodec.VP9,
-        YdVideoCodec.VP9: VideoCodec.VP9,
-        YdVideoCodec.AV01: VideoCodec.AV01,
-    }
-    return mapping.get(codec)
+_YD_VIDEO_CODECS = {
+    YdVideoCodec.AVC1: VideoCodec.H264,
+    YdVideoCodec.VP8: VideoCodec.VP9,
+    YdVideoCodec.VP9: VideoCodec.VP9,
+    YdVideoCodec.AV01: VideoCodec.AV01,
+}
+
+_YD_AUDIO_CODECS = {
+    YdAudioCodec.MP4A: AudioCodec.AAC,
+    YdAudioCodec.OPUS: AudioCodec.OPUS,
+    YdAudioCodec.VORBIS: AudioCodec.VORBIS,
+    YdAudioCodec.MP3: AudioCodec.MP3,
+}
 
 
-def _to_lwyd_audio_codec(codec: YdAudioCodec | None) -> AudioCodec | None:
-    mapping = {
-        YdAudioCodec.MP4A: AudioCodec.AAC,
-        YdAudioCodec.OPUS: AudioCodec.OPUS,
-        YdAudioCodec.VORBIS: AudioCodec.VORBIS,
-        YdAudioCodec.MP3: AudioCodec.MP3,
-    }
-    return mapping.get(codec)
+def to_lwyd_video_codec(codec: YdVideoCodec | None) -> VideoCodec | None:
+    return _YD_VIDEO_CODECS.get(codec)
+
+
+def to_lwyd_audio_codec(codec: YdAudioCodec | None) -> AudioCodec | None:
+    return _YD_AUDIO_CODECS.get(codec)
+
+
+def copy_containers_for_video(codec: VideoCodec | None) -> list[str]:
+    """Containers that can hold this video codec without re-encoding."""
+    if codec is None:
+        return []
+    return [c.value for c in Container if not c.is_audio_only and codec in c.video_codecs]
+
+
+def copy_containers_for_audio(codec: AudioCodec | None) -> list[str]:
+    """Containers that can hold this audio codec without re-encoding."""
+    if codec is None:
+        return []
+    return [c.value for c in Container if codec in c.audio_codecs]
 
 
 @dataclass
@@ -212,8 +232,8 @@ class DownloadTask:
             title=pv.title or self.video_id,
             video_path=video_path,
             audio_path=audio_path,
-            video_codec=_to_lwyd_video_codec(fmt_video.video_codec) if fmt_video else None,
-            audio_codec=_to_lwyd_audio_codec((fmt_audio or fmt_video).audio_codec)
+            video_codec=to_lwyd_video_codec(fmt_video.video_codec) if fmt_video else None,
+            audio_codec=to_lwyd_audio_codec((fmt_audio or fmt_video).audio_codec)
             if fmt_audio or fmt_video else None,
         )
 
@@ -250,7 +270,7 @@ class DownloadTask:
             matched = [f for f in candidate_formats if (f.height or 0) == target_resolution]
             candidate_formats = matched or candidate_formats
         if codec:
-            matched = [f for f in candidate_formats if _to_lwyd_video_codec(f.video_codec) == codec]
+            matched = [f for f in candidate_formats if to_lwyd_video_codec(f.video_codec) == codec]
             candidate_formats = matched or candidate_formats
 
         return max(candidate_formats, key=lambda f: f.height or 0)
@@ -262,7 +282,7 @@ class DownloadTask:
         codec = self.spec.audio_codec
 
         if codec:
-            matched = [f for f in candidate_formats if _to_lwyd_audio_codec(f.audio_codec) == codec]
+            matched = [f for f in candidate_formats if to_lwyd_audio_codec(f.audio_codec) == codec]
             candidate_formats = matched or candidate_formats
 
         target_bitrate = self._to_int(self.spec.audio_bitrate)
