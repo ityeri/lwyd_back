@@ -93,9 +93,9 @@ class Container(StrEnum):
 
     @property
     def audio_codecs(self) -> frozenset[AudioCodec]:
-        if self in (Container.MP4, Container.MOV):
+        if self in (Container.MP4, Container.MOV, Container.M4A):
             return frozenset({AudioCodec.AAC})
-        if self == Container.WEBM:
+        if self in (Container.WEBM, Container.OGG):
             return frozenset({AudioCodec.OPUS, AudioCodec.VORBIS})
         if self == Container.MP3:
             return frozenset({AudioCodec.MP3})
