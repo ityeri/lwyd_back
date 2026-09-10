@@ -108,6 +108,8 @@ class ApiServer:
                 task_id=task_id,
                 status=task.status.value,
                 progress=task.progress,
+                video_progress=task.video_progress,
+                audio_progress=task.audio_progress,
                 error=task.error,
                 filename=task.filename,
             )
@@ -123,6 +125,8 @@ class ApiServer:
                 task_id=task_id,
                 status=task.status.value,
                 progress=task.progress,
+                video_progress=task.video_progress,
+                audio_progress=task.audio_progress,
                 error=task.error,
                 filename=task.filename,
             )

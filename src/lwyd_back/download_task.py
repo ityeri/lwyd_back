@@ -179,6 +179,8 @@ class DownloadTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: TaskStatus = TaskStatus.WAIT
     progress: float | None = None
+    video_progress: float | None = None
+    audio_progress: float | None = None
     error: str | None = None
     filename: str | None = None
     task: asyncio.Task | None = field(default=None, init=False)
@@ -223,7 +225,8 @@ class DownloadTask:
         fmt_video, fmt_audio = self._pick_formats(pv.formats)
 
         self.status = TaskStatus.DOWNLOADING
-        self.progress = 0.1
+        self.video_progress = 0.0 if fmt_video else None
+        self.audio_progress = 0.0 if fmt_audio else None
 
         video_path = await self._download_format(fmt_video, work_dir, 'video')
         audio_path = await self._download_format(fmt_audio, work_dir, 'audio')
@@ -296,14 +299,21 @@ class DownloadTask:
             return None
         ext = fmt.container.value or 'bin'
         output_path = work_dir / f'{filename}.{ext}'
-        options = DownloadOptions(progress=self._on_download_progress)
+        options = DownloadOptions(progress=lambda snapshot: self._on_download_progress(snapshot, filename))
         result = await fmt.adownload(output_path, options=options)
+        self._set_stream_progress(filename, 1.0)
         logger.info('stream downloaded: task_id=%s name=%s bytes=%d', self.task_id, filename, result.bytes_written)
         return output_path
 
-    def _on_download_progress(self, progress: DownloadProgress) -> None:
+    def _set_stream_progress(self, name: str, value: float) -> None:
+        if name == 'video':
+            self.video_progress = value
+        else:
+            self.audio_progress = value
+
+    def _on_download_progress(self, progress: DownloadProgress, name: str) -> None:
         if progress.total:
-            self.progress = progress.downloaded / progress.total
+            self._set_stream_progress(name, progress.downloaded / progress.total)
 
     async def _post_process_media(self, media: DownloadedMedia) -> str:
         output_name = f'{self._sanitize(media.title)}.{self.spec.container.value}'
