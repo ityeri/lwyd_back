@@ -155,7 +155,7 @@ class DownloadTask:
     video_id: str
     spec: DownloadSpec
     download_dir: Path
-    duration_ms: int | None = None
+    media_duration_ms: int | None = None
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: TaskStatus = TaskStatus.WAIT
     progress: float | None = None
@@ -331,7 +331,7 @@ class DownloadTask:
             raise RuntimeError('nothing to download')
 
         command += [str(output_path)]
-        duration_ms = self.duration_ms or 0  # TODO this function reads an actual file
+        duration_ms = self.media_duration_ms or 0  # TODO this function reads an actual file
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )

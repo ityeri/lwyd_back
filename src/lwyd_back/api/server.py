@@ -7,7 +7,8 @@ from fastapi import APIRouter, FastAPI, HTTPException, Path
 from fastapi.responses import FileResponse
 from yspy import Video, VideoState
 
-from lwyd_back.api.schemas import DownloadRequest, DownloadStartResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
+from lwyd_back.api.schemas import DownloadRequest, DownloadStartResponse, StreamInfo, TaskStatusResponse, \
+    VideoInfoResponse
 from lwyd_back.config import Config
 from lwyd_back.download_task import DownloadSpec, DownloadTask, TaskStatus
 
@@ -84,10 +85,12 @@ class ApiServer:
                 audio_codec=request.audio_codec,
             )
             duration_ms = (video.length_seconds or 0) * 1000 if video is not None else 0
-            task = DownloadTask(video_id=video_id, spec=spec, duration_ms=duration_ms, download_dir=self.config.download_dir)
+            task = DownloadTask(video_id=video_id, spec=spec, media_duration_ms=duration_ms,
+                                download_dir=self.config.download_dir)
             self._tasks[task.task_id] = task
             task.start()
-            logger.info('download task started: task_id=%s video_id=%s mode=%s container=%s', task.task_id, video_id, request.mode.value, request.container.value)
+            logger.info('download task started: task_id=%s video_id=%s mode=%s container=%s', task.task_id, video_id,
+                        request.mode.value, request.container.value)
             return DownloadStartResponse(video_id=video_id, task_id=task.task_id, status=task.status.value)
 
         @router.get('/task/{task_id}')
@@ -137,6 +140,6 @@ class ApiServer:
             host=self.config.server_host,
             port=self.config.server_port,
             log_level=self.config.log_level,
-            log_config=None # To make uvicorn using the root logger setting
+            log_config=None  # To make uvicorn using the root logger setting
         )
         await uvicorn.Server(server_config).serve()
