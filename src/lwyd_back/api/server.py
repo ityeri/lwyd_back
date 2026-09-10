@@ -11,8 +11,6 @@ from lwyd_back.api.schemas import DownloadRequest, PreDownloadResponse, StreamIn
 from lwyd_back.config import Config
 from lwyd_back.download_task import DownloadTask, TaskStatus
 
-_VIDEO_ID = Path(min_length=11, max_length=11)
-
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +26,7 @@ class ApiServer:
         router = APIRouter(prefix='/api')
 
         @router.post('/info/{video_id}')
-        async def info(video_id: str = _VIDEO_ID) -> VideoInfoResponse:
+        async def info(video_id: str = Path(min_length=11, max_length=11)) -> VideoInfoResponse:
             video_task = asyncio.create_task(Video.aget(video_id))
             streams_task = asyncio.create_task(ydpy.PlayableVideo.afetch(video_id))
             video, state = await video_task
