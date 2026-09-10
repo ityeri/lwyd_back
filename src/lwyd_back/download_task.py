@@ -147,6 +147,7 @@ class DownloadTask:
     video_id: str
     request: DownloadRequest
     download_dir: Path
+    duration_ms: int | None = None
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: TaskStatus = TaskStatus.WAIT
     progress: float | None = None
@@ -322,7 +323,7 @@ class DownloadTask:
             raise RuntimeError('nothing to download')
 
         command += [str(output_path)]
-        duration_ms = await self._probe_duration_ms(video_path or audio_path)  # TODO this function reads an actual file
+        duration_ms = self.duration_ms or 0  # TODO this function reads an actual file
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -369,21 +370,6 @@ class DownloadTask:
 
             return args
         return ['-c', 'copy']
-
-    @staticmethod
-    async def _probe_duration_ms(path: Path | None) -> int:
-        if path is None:
-            return 0
-        try:
-            process = await asyncio.create_subprocess_exec(
-                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await process.communicate()
-            return int(float(stdout.decode().strip()) * 1000)
-        except Exception:
-            return 0
 
     @staticmethod
     def _sanitize(title: str) -> str:
