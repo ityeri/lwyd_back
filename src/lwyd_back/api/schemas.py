@@ -31,7 +31,7 @@ class DownloadRequest(BaseModel):
     container: Container = Container.MP4
 
 
-class PreDownloadResponse(BaseModel):
+class DownloadStartResponse(BaseModel):
     video_id: str = Field(min_length=11, max_length=11)
     task_id: str
     status: str

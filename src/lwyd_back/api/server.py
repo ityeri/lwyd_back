@@ -7,7 +7,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Path
 from fastapi.responses import FileResponse
 from yspy import Video, VideoState
 
-from lwyd_back.api.schemas import DownloadRequest, PreDownloadResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
+from lwyd_back.api.schemas import DownloadRequest, DownloadStartResponse, StreamInfo, TaskStatusResponse, VideoInfoResponse
 from lwyd_back.config import Config
 from lwyd_back.download_task import DownloadTask, TaskStatus
 
@@ -69,13 +69,13 @@ class ApiServer:
                 audio_streams=audio_streams,
             )
 
-        @router.post('/predownload/{video_id}')
-        async def predownload(video_id: str, request: DownloadRequest) -> PreDownloadResponse:
+        @router.post('/download/{video_id}')
+        async def download_start(video_id: str, request: DownloadRequest) -> DownloadStartResponse:
             task = DownloadTask(video_id=video_id, request=request, download_dir=self.config.download_dir)
             self._tasks[task.task_id] = task
             task.start()
             logger.info('download task started: task_id=%s video_id=%s mode=%s container=%s', task.task_id, video_id, request.mode.value, request.container.value)
-            return PreDownloadResponse(video_id=video_id, task_id=task.task_id, status=task.status.value)
+            return DownloadStartResponse(video_id=video_id, task_id=task.task_id, status=task.status.value)
 
         @router.get('/task/{task_id}')
         async def task_status(task_id: str) -> TaskStatusResponse:
@@ -106,7 +106,7 @@ class ApiServer:
             )
 
         @router.get('/download/{task_id}')
-        async def download(task_id: str):
+        async def download_file(task_id: str):
             task = self._tasks.get(task_id)
             if task is None or task.filename is None:
                 return TaskStatusResponse(task_id=task_id, status=TaskStatus.ERROR.value, error='file not ready')
