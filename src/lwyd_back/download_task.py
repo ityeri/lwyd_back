@@ -374,7 +374,6 @@ class DownloadTask:
         stderr_task = asyncio.create_task(drain_stderr())
         async for line in process.stdout:
             text = line.decode(errors='replace').strip()
-            print(text)
             if text.startswith('out_time_ms='):
                 # ffmpeg reports microseconds despite the 'ms' name????
                 out_ms = int(text.split('=', 1)[1]) // 1000
