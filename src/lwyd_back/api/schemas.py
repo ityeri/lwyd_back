@@ -42,5 +42,7 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: str
     progress: float | None = None
+    video_progress: float | None = None
+    audio_progress: float | None = None
     error: str | None = None
     filename: str | None = None
